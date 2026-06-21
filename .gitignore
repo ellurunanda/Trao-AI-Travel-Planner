@@ -10,6 +10,5 @@ yarn-error.log*
 .env
 backend/.env
 .env
-backend/.env
-.env
+.env.example
 backend/.env
