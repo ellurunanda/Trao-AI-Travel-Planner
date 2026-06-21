@@ -190,6 +190,45 @@ async function generateFromGemini(prompt) {
   return normalizeGeminiText(data);
 }
 
+async function detectDestinationCountry(destination) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+  try {
+    const encoded = encodeURIComponent(destination);
+    const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=1&q=${encoded}`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'Trao-AI-Travel-Planner/1.0'
+      },
+      signal: controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error(`Geocoding Error: Status Code ${response.status}`);
+    }
+
+    const results = await response.json();
+    if (!Array.isArray(results) || results.length === 0) {
+      return null;
+    }
+
+    const top = results[0];
+    const countryCode = String(top?.address?.country_code || '').toUpperCase();
+    const countryName = top?.address?.country || '';
+
+    if (!countryCode) {
+      return null;
+    }
+
+    return { countryCode, countryName };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function mapGenerationError(error) {
   if (/timeout/i.test(error.message)) {
     return { status: 504, message: 'Trip generation timed out. Please try again.' };
@@ -240,6 +279,29 @@ exports.generateNewTrip = async (req, res) => {
   } catch (error) {
     const failure = mapGenerationError(error);
     return res.status(failure.status).json({ message: failure.message });
+  }
+};
+
+exports.detectDestination = async (req, res) => {
+  const destination = String(req.body?.destination || '').trim();
+  if (destination.length < 2) {
+    return res.status(400).json({ message: 'Destination is required' });
+  }
+
+  try {
+    const detected = await detectDestinationCountry(destination);
+    if (!detected) {
+      return res.json({ detected: false, isInternational: false });
+    }
+
+    return res.json({
+      detected: true,
+      isInternational: detected.countryCode !== 'IN',
+      countryCode: detected.countryCode,
+      countryName: detected.countryName
+    });
+  } catch (error) {
+    return res.status(502).json({ message: 'Could not auto-detect destination right now.' });
   }
 };
 

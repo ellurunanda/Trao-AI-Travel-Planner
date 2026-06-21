@@ -3,28 +3,6 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '@/utils/api';
 
-// Common Indian cities/states/keywords — if destination doesn't match any, treat as international
-const INDIA_KEYWORDS = [
-  'india','delhi','mumbai','bangalore','bengaluru','hyderabad','chennai','kolkata',
-  'pune','ahmedabad','jaipur','lucknow','surat','kanpur','nagpur','indore','bhopal',
-  'patna','vadodara','goa','agra','varanasi','visakhapatnam','vizag','coimbatore',
-  'madurai','kochi','cochin','thiruvananthapuram','trivandrum','bhubaneswar','ranchi',
-  'amritsar','chandigarh','dehradun','shimla','manali','rishikesh','haridwar','udaipur',
-  'jodhpur','mysore','mysuru','ooty','darjeeling','gangtok','shillong','guwahati',
-  'srinagar','leh','ladakh','andaman','kerala','rajasthan','uttarakhand','himachal',
-  'kashmir','sikkim','meghalaya','assam','gujarat','maharashtra','karnataka','tamilnadu',
-  'andhra','telangana','odisha','jharkhand','bihar','westbengal','punjab','haryana'
-];
-
-function isInternational(destination, startingFrom) {
-  if (!destination) return false;
-  const dest = destination.toLowerCase().replace(/[^a-z\s]/g, '');
-  const isDestIndia = INDIA_KEYWORDS.some(k => dest.includes(k));
-  if (isDestIndia) return false; // domestic
-  // If startingFrom is set and is also international, still use Flight
-  return true; // destination is outside India
-}
-
 export default function CreateTripForm({ onCreated, onGeneratingChange }) {
   const [destination, setDestination] = useState('');
   const [startingFrom, setStartingFrom] = useState('');
@@ -35,16 +13,59 @@ export default function CreateTripForm({ onCreated, onGeneratingChange }) {
   const [interests, setInterests] = useState('food, sightseeing');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [detectingDestination, setDetectingDestination] = useState(false);
+  const [destinationHint, setDestinationHint] = useState('');
 
   useEffect(() => {
-    const international = isInternational(destination, startingFrom);
-    if (international) {
-      setTransportMode('Flight');
-      setAutoFlight(true);
-    } else {
+    const query = destination.trim();
+    if (query.length < 2) {
+      setDetectingDestination(false);
+      setDestinationHint('');
       setAutoFlight(false);
+      return;
     }
-  }, [destination, startingFrom]);
+
+    let cancelled = false;
+    const timerId = setTimeout(async () => {
+      setDetectingDestination(true);
+      const response = await apiFetch('/api/trips/detect-destination', {
+        method: 'POST',
+        body: JSON.stringify({ destination: query })
+      });
+
+      if (cancelled) {
+        return;
+      }
+
+      setDetectingDestination(false);
+      if (!response.ok) {
+        setDestinationHint('');
+        setAutoFlight(false);
+        return;
+      }
+
+      const data = await response.json();
+      if (!data.detected) {
+        setDestinationHint('Could not detect destination automatically.');
+        setAutoFlight(false);
+        return;
+      }
+
+      if (data.isInternational) {
+        setTransportMode('Flight');
+        setAutoFlight(true);
+      } else {
+        setAutoFlight(false);
+      }
+
+      setDestinationHint(data.countryName ? `Detected country: ${data.countryName}` : '');
+    }, 550);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timerId);
+    };
+  }, [destination]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -69,6 +90,7 @@ export default function CreateTripForm({ onCreated, onGeneratingChange }) {
         setDestination('');
         setStartingFrom('');
         setAutoFlight(false);
+        setDestinationHint('');
         onCreated();
         return;
       }
@@ -90,6 +112,8 @@ export default function CreateTripForm({ onCreated, onGeneratingChange }) {
       <div>
         <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Destination</label>
         <input className="field" placeholder="e.g. Tokyo, Paris, Bali" value={destination} onChange={(e) => setDestination(e.target.value)} required disabled={loading} />
+        {detectingDestination && <p className="mt-1 text-xs text-slate-400">Detecting destination...</p>}
+        {!detectingDestination && destinationHint && <p className="mt-1 text-xs text-slate-400">{destinationHint}</p>}
       </div>
       <div>
         <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Starting From</label>

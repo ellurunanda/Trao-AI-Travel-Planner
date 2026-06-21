@@ -3,6 +3,7 @@ const auth = require('../middleware/auth');
 const {
   getTrips,
   generateNewTrip,
+  detectDestination,
   getTripById,
   updateTrip,
   deleteTrip,
@@ -16,6 +17,7 @@ router.use(auth);
 
 router.get('/', getTrips);
 router.post('/', generateNewTrip);
+router.post('/detect-destination', detectDestination);
 router.get('/:id', getTripById);
 router.put('/:id', updateTrip);
 router.delete('/:id', deleteTrip);
