@@ -1,32 +1,36 @@
 # Trao AI Travel Planner
 
-Trao is a full-stack AI travel planning app where users can create trips, get AI-generated itineraries, edit plans, manage packing lists, and export polished trip documents.
-
----
+Trao is a full-stack AI travel planner that generates editable itineraries, destination-aware packing, and export-ready trip documents.
 
 ## Features
 
-- JWT-based user authentication (register/login)
-- Multi-user trip isolation (each user sees only their own trips)
-- AI-powered trip generation with:
+- Secure auth with JWT (register/login)
+- User-isolated trips (each user sees only their own data)
+- AI trip generation with:
   - day-wise itinerary
-  - destination-aware transport options
+  - route-aware transport options
   - hotel suggestions
-  - budget estimation
+  - local-currency budget estimates
   - destination-specific packing list
-- Edit support:
+  - season tips for travel month
+- Destination intelligence:
+  - destination country auto-detection in trip form
+  - auto-set Flight for international destinations (override supported)
+  - destination highlights images (with fallback image source)
+  - latest travel updates/news cards
+- Editing:
   - regenerate a single day with feedback
   - add/remove activities
-  - toggle packing checklist completion
+  - regenerate packing list
+  - packing checklist toggle
 - Trip management:
-  - view all trips
-  - select active trip
-  - delete trip with custom confirmation dialog
+  - list/select/delete trips
+  - custom delete confirmation modal
+  - full-screen loader while generating itinerary
 - Export:
-  - professional HTML itinerary download
-  - professional PDF itinerary download
-
----
+  - polished HTML itinerary
+  - polished PDF itinerary
+  - aligned sections across HTML and PDF
 
 ## Tech Stack
 
@@ -37,9 +41,7 @@ Trao is a full-stack AI travel planning app where users can create trips, get AI
 | Database | MongoDB, Mongoose |
 | Auth | JWT, bcryptjs |
 | AI | Google Gemini API |
-| PDF Export | jsPDF |
-
----
+| Export | jsPDF + HTML export |
 
 ## Project Structure
 
@@ -62,22 +64,18 @@ Trao AI Travel Planner/
    └─ package.json
 ```
 
----
-
 ## Prerequisites
 
-- Node.js 18+ (recommended LTS)
+- Node.js 18+ (LTS recommended)
 - npm
 - MongoDB (local or Atlas)
 - Gemini API key
 
----
-
 ## Environment Setup
 
-### Backend (`backend/.env`)
+### 1. Backend (`backend/.env`)
 
-Copy `backend/.env.example` to `backend/.env` and set:
+Copy `backend/.env.example` to `backend/.env`:
 
 ```env
 PORT=5000
@@ -87,17 +85,13 @@ GEMINI_API_KEY=your-gemini-api-key
 EXTERNAL_API_TIMEOUT_MS=90000
 ```
 
-### Frontend
-
-Create `frontend/.env.local`:
+### 2. Frontend (`frontend/.env.local`)
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:5000
 ```
 
-> Never commit `.env` or `.env.local` files.
-
----
+> Do not commit `.env` or `.env.local`.
 
 ## Local Development
 
@@ -106,48 +100,43 @@ NEXT_PUBLIC_API_URL=http://localhost:5000
 ```bash
 cd backend
 npm install
-
 cd ../frontend
 npm install
 ```
 
-### 2. Start backend
+### 2. Run backend
 
 ```bash
 cd backend
 npm run dev
 ```
 
-Backend runs on `http://localhost:5000`.
+Backend: `http://localhost:5000`
 
-### 3. Start frontend
+### 3. Run frontend
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Frontend runs on `http://localhost:3000`.
+Frontend: `http://localhost:3000`
 
----
-
-## Available Scripts
+## Scripts
 
 ### Backend
 
-- `npm run dev` — start backend with nodemon
-- `npm start` — start backend with node
+- `npm run dev` - run with nodemon
+- `npm start` - run with node
 
 ### Frontend
 
-- `npm run dev` — clean `.next` and run Next.js on port 3000
-- `npm run build` — clean `.next` and build production bundle
-- `npm start` — run production server on port 3000
-- `npm run clean` — remove `.next` directory
+- `npm run dev` - start Next.js dev server on port 3000
+- `npm run build` - production build
+- `npm start` - run production server on port 3000
+- `npm run clean` - remove `.next` cache/build folder
 
----
-
-## Core API Routes
+## API Routes
 
 ### Auth
 
@@ -158,6 +147,7 @@ Frontend runs on `http://localhost:3000`.
 
 - `GET /api/trips`
 - `POST /api/trips`
+- `POST /api/trips/detect-destination`
 - `GET /api/trips/:id`
 - `PUT /api/trips/:id`
 - `DELETE /api/trips/:id`
@@ -166,24 +156,20 @@ Frontend runs on `http://localhost:3000`.
 - `POST /api/trips/:id/days/:dayNumber/regenerate`
 - `POST /api/trips/:id/packing-list`
 
-Health check:
+### Health
 
 - `GET /health`
 
----
+## Typical Flow
 
-## Usage Flow
-
-1. Register or login.
-2. Create a trip (destination, origin, transport mode, days, budget, interests).
-3. Review AI-generated itinerary.
-4. Refine plan (regenerate day, edit activities, update packing).
-5. Export itinerary as professional HTML or PDF.
-
----
+1. Register/login.
+2. Create trip with destination, origin, transport, days, budget, interests.
+3. Let AI generate itinerary + budget + hotels + packing + season tips.
+4. Refine by regenerating days, editing activities, updating packing.
+5. Download final itinerary as HTML or PDF.
 
 ## Notes
 
-- Transport mode auto-switches to Flight for international destinations in the form (can be overridden).
-- AI output quality depends on prompt response quality from Gemini.
-- Trip data is always filtered by authenticated `userId` in backend queries.
+- Destination auto-detection can auto-select Flight for international trips.
+- AI generation timeout can be tuned with `EXTERNAL_API_TIMEOUT_MS`.
+- Older trips created before enrichment may have less media/news data than newly generated trips.
