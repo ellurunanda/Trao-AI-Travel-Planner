@@ -84,6 +84,7 @@ PORT=5000
 MONGO_URI=mongodb://localhost:27017/trao
 JWT_SECRET=change-me
 GEMINI_API_KEY=your-gemini-api-key
+EXTERNAL_API_TIMEOUT_MS=90000
 ```
 
 ### Frontend

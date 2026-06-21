@@ -13,6 +13,7 @@ export default function DashboardPage() {
   const [selectedTrip, setSelectedTrip] = useState(null);
   const [deletingTripId, setDeletingTripId] = useState(null);
   const [pendingDeleteTripId, setPendingDeleteTripId] = useState(null);
+  const [isGeneratingTrip, setIsGeneratingTrip] = useState(false);
 
   const loadTrips = async () => {
     const response = await apiFetch('/api/trips');
@@ -107,7 +108,7 @@ export default function DashboardPage() {
         <div className="grid gap-6 lg:grid-cols-[340px_1fr]">
           {/* Sidebar */}
           <div className="space-y-5">
-            <CreateTripForm onCreated={loadTrips} />
+            <CreateTripForm onCreated={loadTrips} onGeneratingChange={setIsGeneratingTrip} />
             <div className="card p-5 space-y-3">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wide">Your trips</h2>
@@ -170,6 +171,16 @@ export default function DashboardPage() {
           </div>
         </div>
       </div>
+
+      {isGeneratingTrip && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/55 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-indigo-200 border-t-indigo-600" />
+            <h3 className="text-lg font-bold text-slate-900">Generating your itinerary</h3>
+            <p className="mt-2 text-sm text-slate-500">Please wait while AI creates your personalized trip plan.</p>
+          </div>
+        </div>
+      )}
 
       {pendingDeleteTrip && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 px-4">

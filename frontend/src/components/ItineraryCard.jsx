@@ -211,9 +211,14 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(11);
         doc.text(`${trip.startingFrom ? `From ${trip.startingFrom} • ` : ''}${trip.durationDays} days • ${trip.budgetTier} budget • ${currencyLabel}`, margin, 74);
-        doc.text(`Generated: ${new Date().toLocaleString()}`, margin, 92);
+        if (trip.transportMode) {
+          doc.text(`Transport: ${trip.transportMode}`, margin, 92);
+        }
+        if (trip.interests?.length) {
+          doc.text(`Interests: ${trip.interests.join(', ')}`, margin, 108);
+        }
       }
-      y = isContinuation ? 58 : 144;
+      y = isContinuation ? 58 : 156;
     };
 
     const drawSectionTitle = (title) => {
@@ -257,12 +262,6 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
 
     drawTopBand();
 
-    drawSectionTitle('Trip Snapshot');
-    writeLine(`Destination: ${trip.destination}`, 10, 'bold', 3);
-    writeLine(`Duration: ${trip.durationDays} days`, 10, 'normal', 3);
-    writeLine(`Budget tier: ${trip.budgetTier}`, 10, 'normal', 3);
-    writeLine(`Currency: ${currencyLabel}`, 10, 'normal', 10);
-
     if (trip.transportOptions?.length) {
       drawSectionTitle('Transport Options');
       trip.transportOptions.forEach((option) => {
@@ -302,9 +301,9 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
         drawCardBlock(
           hotel.name,
           [
-            `Tier: ${hotel.tier || 'Standard'}`,
-            hotel.estimatedCostNightLocal > 0 ? `Rate: ${formatMoney(hotel.estimatedCostNightLocal, ' / night')}` : 'Rate: Not specified',
-            hotel.rating ? `Rating: ${hotel.rating}` : ''
+            `${hotel.tier || 'Standard'}`,
+            hotel.estimatedCostNightLocal > 0 ? `${formatMoney(hotel.estimatedCostNightLocal, ' / night')}` : 'Rate on request',
+            hotel.rating ? `⭐ ${hotel.rating}` : ''
           ].filter(Boolean),
           [245, 158, 11]
         );
@@ -315,7 +314,7 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
       drawSectionTitle('Packing Checklist');
       trip.packingList.forEach((item) => {
         drawCardBlock(
-          `${item.isPacked ? 'Completed' : 'Pending'} • ${item.item}`,
+          `${item.isPacked ? '✓' : '○'} ${item.item}`,
           [`Category: ${item.category || 'Other'}`],
           item.isPacked ? [5, 150, 105] : [100, 116, 139]
         );
@@ -502,7 +501,7 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
                 <div className="mt-1 flex gap-2 flex-wrap">
                   <span className="text-xs text-slate-500 bg-slate-100 rounded-full px-2 py-0.5">{hotel.tier}</span>
                   <span className="text-xs text-slate-500 bg-slate-100 rounded-full px-2 py-0.5">${hotel.estimatedCostNightUSD}/night</span>
-                  <span className="text-xs text-slate-500 bg-yellow-50 text-yellow-600 border border-yellow-100 rounded-full px-2 py-0.5">⭐ {hotel.rating}</span>
+                  <span className="text-xs bg-yellow-50 text-yellow-600 border border-yellow-100 rounded-full px-2 py-0.5">⭐ {hotel.rating}</span>
                   {hotel.estimatedCostNightLocal > 0 && (
                     <span className="text-xs font-medium text-emerald-600 bg-emerald-50 border border-emerald-100 rounded-full px-2 py-0.5">{sym}{hotel.estimatedCostNightLocal.toLocaleString()}/night</span>
                   )}

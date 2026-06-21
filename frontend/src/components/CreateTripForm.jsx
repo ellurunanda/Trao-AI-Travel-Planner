@@ -25,7 +25,7 @@ function isInternational(destination, startingFrom) {
   return true; // destination is outside India
 }
 
-export default function CreateTripForm({ onCreated }) {
+export default function CreateTripForm({ onCreated, onGeneratingChange }) {
   const [destination, setDestination] = useState('');
   const [startingFrom, setStartingFrom] = useState('');
   const [transportMode, setTransportMode] = useState('Flight');
@@ -34,6 +34,7 @@ export default function CreateTripForm({ onCreated }) {
   const [budgetTier, setBudgetTier] = useState('Medium');
   const [interests, setInterests] = useState('food, sightseeing');
   const [loading, setLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
 
   useEffect(() => {
     const international = isInternational(destination, startingFrom);
@@ -47,43 +48,52 @@ export default function CreateTripForm({ onCreated }) {
 
   const submit = async (event) => {
     event.preventDefault();
+    setErrorMessage('');
+    onGeneratingChange?.(true);
     setLoading(true);
 
-    const response = await apiFetch('/api/trips', {
-      method: 'POST',
-      body: JSON.stringify({
-        destination,
-        startingFrom,
-        transportMode,
-        durationDays,
-        budgetTier,
-        interests: interests.split(',').map((item) => item.trim()).filter(Boolean)
-      })
-    });
+    try {
+      const response = await apiFetch('/api/trips', {
+        method: 'POST',
+        body: JSON.stringify({
+          destination,
+          startingFrom,
+          transportMode,
+          durationDays,
+          budgetTier,
+          interests: interests.split(',').map((item) => item.trim()).filter(Boolean)
+        })
+      });
 
-    setLoading(false);
+      if (response.ok) {
+        setDestination('');
+        setStartingFrom('');
+        setAutoFlight(false);
+        onCreated();
+        return;
+      }
 
-    if (response.ok) {
-      setDestination('');
-      setStartingFrom('');
-      setAutoFlight(false);
-      onCreated();
+      const error = await response.json().catch(() => ({}));
+      setErrorMessage(error.message || 'Could not generate itinerary. Please try again.');
+    } finally {
+      setLoading(false);
+      onGeneratingChange?.(false);
     }
   };
 
   return (
-    <form onSubmit={submit} className="card space-y-4 p-5">
+    <form onSubmit={submit} className="card relative space-y-4 p-5">
       <div>
         <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wide">Create New Trip</h2>
         <p className="text-xs text-slate-400 mt-0.5">AI will generate a full itinerary.</p>
       </div>
       <div>
         <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Destination</label>
-        <input className="field" placeholder="e.g. Tokyo, Paris, Bali" value={destination} onChange={(e) => setDestination(e.target.value)} required />
+        <input className="field" placeholder="e.g. Tokyo, Paris, Bali" value={destination} onChange={(e) => setDestination(e.target.value)} required disabled={loading} />
       </div>
       <div>
         <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Starting From</label>
-        <input className="field" placeholder="e.g. Mumbai, New York, London" value={startingFrom} onChange={(e) => setStartingFrom(e.target.value)} />
+        <input className="field" placeholder="e.g. Mumbai, New York, London" value={startingFrom} onChange={(e) => setStartingFrom(e.target.value)} disabled={loading} />
       </div>
       <div>
         <label className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-slate-600 uppercase tracking-wide">
@@ -97,7 +107,7 @@ export default function CreateTripForm({ onCreated }) {
         <select
           className="field"
           value={transportMode}
-          disabled={autoFlight}
+          disabled={autoFlight || loading}
           onChange={(e) => setTransportMode(e.target.value)}
         >
           <option>Flight</option>
@@ -115,11 +125,11 @@ export default function CreateTripForm({ onCreated }) {
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Days</label>
-          <input className="field" type="number" min={1} max={30} value={durationDays} onChange={(e) => setDurationDays(Number(e.target.value))} />
+          <input className="field" type="number" min={1} max={30} value={durationDays} onChange={(e) => setDurationDays(Number(e.target.value))} disabled={loading} />
         </div>
         <div>
           <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Budget</label>
-          <select className="field" value={budgetTier} onChange={(e) => setBudgetTier(e.target.value)}>
+          <select className="field" value={budgetTier} onChange={(e) => setBudgetTier(e.target.value)} disabled={loading}>
             <option>Low</option>
             <option>Medium</option>
             <option>High</option>
@@ -128,11 +138,17 @@ export default function CreateTripForm({ onCreated }) {
       </div>
       <div>
         <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Interests</label>
-        <input className="field" placeholder="food, sightseeing, adventure..." value={interests} onChange={(e) => setInterests(e.target.value)} />
+        <input className="field" placeholder="food, sightseeing, adventure..." value={interests} onChange={(e) => setInterests(e.target.value)} disabled={loading} />
       </div>
       <button disabled={loading} className="btn-primary w-full py-2.5">
-        {loading ? '⏳ Generating with AI...' : '✨ Generate Itinerary'}
+        {loading ? (
+          <span className="inline-flex items-center justify-center gap-2">
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+            Generating with AI...
+          </span>
+        ) : '✨ Generate Itinerary'}
       </button>
+      {errorMessage && <p className="text-xs text-red-500">{errorMessage}</p>}
     </form>
   );
 }

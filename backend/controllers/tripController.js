@@ -1,23 +1,54 @@
 const Trip = require('../models/Trip');
 
 const GATHERING_MESSAGE = 'The Gemini API key is missing or the service did not return a usable payload.';
+const EXTERNAL_API_TIMEOUT_MS = Number(process.env.EXTERNAL_API_TIMEOUT_MS || 90000);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function fetchWithRetry(url, options, retries = 5, delay = 1000) {
-  const response = await fetch(url, options);
-  if (response.ok) {
-    return response.json();
+async function fetchWithRetry(url, options, retries = 3, delay = 1000) {
+  let attempt = 0;
+  let currentDelay = delay;
+  let lastError = null;
+
+  while (attempt <= retries) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), EXTERNAL_API_TIMEOUT_MS);
+
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        return response.json();
+      }
+
+      const canRetry = response.status === 429 || response.status >= 500;
+      if (!canRetry || attempt === retries) {
+        throw new Error(`External API Error: Status Code ${response.status}`);
+      }
+    } catch (error) {
+      clearTimeout(timeoutId);
+      const isTimeout = error && (error.name === 'AbortError' || /abort|timeout/i.test(error.message));
+
+      if (isTimeout && attempt === retries) {
+        throw new Error('External API timeout while generating itinerary');
+      }
+
+      if (!isTimeout && attempt === retries) {
+        throw error;
+      }
+
+      lastError = error;
+    }
+
+    await sleep(currentDelay);
+    currentDelay *= 2;
+    attempt += 1;
   }
 
-  if ((response.status === 429 || response.status >= 500) && retries > 0) {
-    await sleep(delay);
-    return fetchWithRetry(url, options, retries - 1, delay * 2);
-  }
-
-  throw new Error(`External API Error: Status Code ${response.status}`);
+  throw lastError || new Error('External API request failed');
 }
 
 function normalizeGeminiText(payload) {
@@ -159,6 +190,18 @@ async function generateFromGemini(prompt) {
   return normalizeGeminiText(data);
 }
 
+function mapGenerationError(error) {
+  if (/timeout/i.test(error.message)) {
+    return { status: 504, message: 'Trip generation timed out. Please try again.' };
+  }
+
+  if (/External API Error/i.test(error.message)) {
+    return { status: 502, message: 'AI service is temporarily unavailable. Please try again.' };
+  }
+
+  return { status: 500, message: 'Failed to generate trip details. Please try again.' };
+}
+
 async function saveTrip(req, res, generated, tripInput) {
   const trip = await Trip.create({
     userId: req.user.id,
@@ -191,8 +234,13 @@ exports.generateNewTrip = async (req, res) => {
     return res.status(400).json({ message: 'destination, durationDays, and budgetTier are required' });
   }
 
-  const generated = await generateFromGemini(buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests }));
-  return saveTrip(req, res, generated, { destination, startingFrom, transportMode, durationDays, budgetTier, interests });
+  try {
+    const generated = await generateFromGemini(buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests }));
+    return saveTrip(req, res, generated, { destination, startingFrom, transportMode, durationDays, budgetTier, interests });
+  } catch (error) {
+    const failure = mapGenerationError(error);
+    return res.status(failure.status).json({ message: failure.message });
+  }
 };
 
 exports.getTripById = async (req, res) => {
@@ -274,7 +322,13 @@ Return only JSON for a single day object:
 }
   `.trim();
 
-  const generated = await generateFromGemini(prompt);
+  let generated;
+  try {
+    generated = await generateFromGemini(prompt);
+  } catch (error) {
+    const failure = mapGenerationError(error);
+    return res.status(failure.status).json({ message: failure.message });
+  }
   const newDay = generated.dayNumber ? generated : generated.itinerary?.[0];
   if (!newDay) {
     return res.status(500).json({ message: 'Could not regenerate day' });
@@ -289,7 +343,13 @@ exports.generatePackingList = async (req, res) => {
   const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
   if (!trip) return res.status(404).json({ message: 'Trip not found' });
 
-  const generated = await generateFromGemini(buildPackingPrompt(trip));
+  let generated;
+  try {
+    generated = await generateFromGemini(buildPackingPrompt(trip));
+  } catch (error) {
+    const failure = mapGenerationError(error);
+    return res.status(failure.status).json({ message: failure.message });
+  }
   trip.packingList = generated.packingList || [];
   await trip.save();
   return res.json(trip);
