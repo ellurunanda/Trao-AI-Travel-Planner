@@ -1,0 +1,138 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { apiFetch } from '@/utils/api';
+
+// Common Indian cities/states/keywords — if destination doesn't match any, treat as international
+const INDIA_KEYWORDS = [
+  'india','delhi','mumbai','bangalore','bengaluru','hyderabad','chennai','kolkata',
+  'pune','ahmedabad','jaipur','lucknow','surat','kanpur','nagpur','indore','bhopal',
+  'patna','vadodara','goa','agra','varanasi','visakhapatnam','vizag','coimbatore',
+  'madurai','kochi','cochin','thiruvananthapuram','trivandrum','bhubaneswar','ranchi',
+  'amritsar','chandigarh','dehradun','shimla','manali','rishikesh','haridwar','udaipur',
+  'jodhpur','mysore','mysuru','ooty','darjeeling','gangtok','shillong','guwahati',
+  'srinagar','leh','ladakh','andaman','kerala','rajasthan','uttarakhand','himachal',
+  'kashmir','sikkim','meghalaya','assam','gujarat','maharashtra','karnataka','tamilnadu',
+  'andhra','telangana','odisha','jharkhand','bihar','westbengal','punjab','haryana'
+];
+
+function isInternational(destination, startingFrom) {
+  if (!destination) return false;
+  const dest = destination.toLowerCase().replace(/[^a-z\s]/g, '');
+  const isDestIndia = INDIA_KEYWORDS.some(k => dest.includes(k));
+  if (isDestIndia) return false; // domestic
+  // If startingFrom is set and is also international, still use Flight
+  return true; // destination is outside India
+}
+
+export default function CreateTripForm({ onCreated }) {
+  const [destination, setDestination] = useState('');
+  const [startingFrom, setStartingFrom] = useState('');
+  const [transportMode, setTransportMode] = useState('Flight');
+  const [autoFlight, setAutoFlight] = useState(false);
+  const [durationDays, setDurationDays] = useState(5);
+  const [budgetTier, setBudgetTier] = useState('Medium');
+  const [interests, setInterests] = useState('food, sightseeing');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const international = isInternational(destination, startingFrom);
+    if (international) {
+      setTransportMode('Flight');
+      setAutoFlight(true);
+    } else {
+      setAutoFlight(false);
+    }
+  }, [destination, startingFrom]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+
+    const response = await apiFetch('/api/trips', {
+      method: 'POST',
+      body: JSON.stringify({
+        destination,
+        startingFrom,
+        transportMode,
+        durationDays,
+        budgetTier,
+        interests: interests.split(',').map((item) => item.trim()).filter(Boolean)
+      })
+    });
+
+    setLoading(false);
+
+    if (response.ok) {
+      setDestination('');
+      setStartingFrom('');
+      setAutoFlight(false);
+      onCreated();
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="card space-y-4 p-5">
+      <div>
+        <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wide">Create New Trip</h2>
+        <p className="text-xs text-slate-400 mt-0.5">AI will generate a full itinerary.</p>
+      </div>
+      <div>
+        <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Destination</label>
+        <input className="field" placeholder="e.g. Tokyo, Paris, Bali" value={destination} onChange={(e) => setDestination(e.target.value)} required />
+      </div>
+      <div>
+        <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Starting From</label>
+        <input className="field" placeholder="e.g. Mumbai, New York, London" value={startingFrom} onChange={(e) => setStartingFrom(e.target.value)} />
+      </div>
+      <div>
+        <label className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-slate-600 uppercase tracking-wide">
+          Mode of Transport
+          {autoFlight && (
+            <span className="normal-case font-normal text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-full px-2 py-0.5">
+              ✈ Auto-set: International destination
+            </span>
+          )}
+        </label>
+        <select
+          className="field"
+          value={transportMode}
+          disabled={autoFlight}
+          onChange={(e) => setTransportMode(e.target.value)}
+        >
+          <option>Flight</option>
+          <option>Train</option>
+          <option>Bus</option>
+          <option>Car</option>
+          <option>Cruise</option>
+          <option>Motorcycle</option>
+          <option>Mixed</option>
+        </select>
+        {autoFlight && (
+          <p className="mt-1 text-xs text-slate-400">Destination detected as international. You can <button type="button" className="text-indigo-500 underline" onClick={() => setAutoFlight(false)}>override</button>.</p>
+        )}
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Days</label>
+          <input className="field" type="number" min={1} max={30} value={durationDays} onChange={(e) => setDurationDays(Number(e.target.value))} />
+        </div>
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Budget</label>
+          <select className="field" value={budgetTier} onChange={(e) => setBudgetTier(e.target.value)}>
+            <option>Low</option>
+            <option>Medium</option>
+            <option>High</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="mb-1.5 block text-xs font-semibold text-slate-600 uppercase tracking-wide">Interests</label>
+        <input className="field" placeholder="food, sightseeing, adventure..." value={interests} onChange={(e) => setInterests(e.target.value)} />
+      </div>
+      <button disabled={loading} className="btn-primary w-full py-2.5">
+        {loading ? '⏳ Generating with AI...' : '✨ Generate Itinerary'}
+      </button>
+    </form>
+  );
+}
