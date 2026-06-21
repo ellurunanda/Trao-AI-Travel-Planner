@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { jsPDF } from 'jspdf';
 import { apiFetch } from '@/utils/api';
 
@@ -20,16 +20,103 @@ function slugify(value = '') {
     .replace(/(^-|-$)/g, '');
 }
 
+function decodeHtmlEntities(text = '') {
+  return String(text)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
+}
+
+function cleanUpdateText(text = '') {
+  return decodeHtmlEntities(text).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = false }) {
   const [feedback, setFeedback] = useState('');
   const [drafts, setDrafts] = useState({});
+  const [fallbackImages, setFallbackImages] = useState([]);
 
   const sym = trip.currency?.symbol || '$';
   const code = trip.currency?.code || 'USD';
   const currencyLabel = `${sym}${code ? ` ${code}` : ''}`;
   const formatMoney = (value, suffix = '') => (value > 0 ? `${sym}${Number(value).toLocaleString()}${suffix}` : '');
+  const displayImages = trip.destinationImages?.length ? trip.destinationImages : fallbackImages;
+
+  useEffect(() => {
+    if (trip.destinationImages?.length || !trip.destination) {
+      setFallbackImages([]);
+      return;
+    }
+
+    let active = true;
+    const loadFallbackImages = async () => {
+      try {
+        const query = encodeURIComponent(trip.destination);
+        const response = await fetch(`https://en.wikipedia.org/w/api.php?action=query&format=json&origin=*&generator=search&gsrsearch=${query}&gsrnamespace=0&gsrlimit=6&prop=pageimages|info&piprop=thumbnail&pithumbsize=1200&inprop=url`);
+        if (!response.ok || !active) {
+          return;
+        }
+
+        const payload = await response.json();
+        const pages = Object.values(payload?.query?.pages || {});
+        const images = pages
+          .map((page) => {
+            const url = page?.thumbnail?.source || '';
+            if (!url) {
+              return null;
+            }
+            return {
+              url,
+              title: page?.title || trip.destination,
+              source: 'Wikipedia'
+            };
+          })
+          .filter(Boolean)
+          .slice(0, 6);
+
+        if (active) {
+          setFallbackImages(images);
+        }
+      } catch (error) {
+        if (active) {
+          setFallbackImages([]);
+        }
+      }
+    };
+
+    loadFallbackImages();
+    return () => {
+      active = false;
+    };
+  }, [trip.destination, trip.destinationImages?.length]);
 
   const downloadHtml = () => {
+    const imageRows = (displayImages || []).map((image) => `
+      <article class="image-card">
+        <img src="${escapeHtml(image.url)}" alt="${escapeHtml(image.title || trip.destination)}" />
+        <div class="image-caption">${escapeHtml(image.title || trip.destination)}</div>
+      </article>
+    `).join('');
+
+    const seasonRows = (trip.seasonTips || []).map((tip) => `
+      <article class="card">
+        <div class="card-title">${escapeHtml(tip.title || 'Season Tip')}</div>
+        <p class="subtle">${escapeHtml(tip.detail || '')}</p>
+      </article>
+    `).join('');
+
+    const updateRows = (trip.travelUpdates || []).map((update) => `
+      <article class="card">
+        <div class="card-title">${escapeHtml(cleanUpdateText(update.title || 'Travel update'))}</div>
+        ${update.publishedAt ? `<p class="subtle">Published: ${escapeHtml(update.publishedAt)}</p>` : ''}
+        ${update.summary ? `<p class="subtle">${escapeHtml(cleanUpdateText(update.summary))}</p>` : ''}
+        ${update.url ? `<p class="tip"><strong>Source:</strong> <a href="${escapeHtml(update.url)}">${escapeHtml(update.source || 'Read more')}</a></p>` : ''}
+      </article>
+    `).join('');
+
     const transportRows = (trip.transportOptions || []).map((option) => `
       <article class="card transport-card">
         <div class="card-title">${escapeHtml(option.name || trip.transportMode || 'Transport')}</div>
@@ -106,6 +193,10 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
     .section { margin-top: 16px; }
     .section h2 { margin: 0 0 10px; font-size: 17px; color: #1e293b; }
     .grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .image-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+    .image-card { background: white; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .image-card img { width: 100%; height: 150px; object-fit: cover; display: block; }
+    .image-caption { font-size: 12px; color: var(--muted); padding: 8px 10px; }
     .card { background: white; border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
     .card-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
     .subtle { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
@@ -149,6 +240,9 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
         <div class="stat"><div class="stat-label">Currency</div><div class="stat-value">${escapeHtml(currencyLabel)}</div></div>
       </div>
 
+      ${imageRows ? `<section class="section"><h2>Destination Highlights</h2><div class="image-grid">${imageRows}</div></section>` : ''}
+      ${seasonRows ? `<section class="section"><h2>Season Insights</h2><div class="grid">${seasonRows}</div></section>` : ''}
+      ${updateRows ? `<section class="section"><h2>Latest Travel Updates</h2><div class="grid">${updateRows}</div></section>` : ''}
       ${transportRows ? `<section class="section"><h2>Transport Options</h2><div class="grid">${transportRows}</div></section>` : ''}
       <section class="section"><h2>Day-wise Itinerary</h2>${itineraryRows}</section>
       ${hotelRows ? `<section class="section"><h2>Recommended Hotels</h2><div class="grid">${hotelRows}</div></section>` : ''}
@@ -261,6 +355,36 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
     };
 
     drawTopBand();
+
+    if (displayImages?.length) {
+      drawSectionTitle('Destination Highlights');
+      displayImages.forEach((image) => {
+        const lines = [
+          image.source ? `Source: ${image.source}` : '',
+          image.url || ''
+        ].filter(Boolean);
+        drawCardBlock(image.title || trip.destination, lines, [37, 99, 235]);
+      });
+    }
+
+    if (trip.seasonTips?.length) {
+      drawSectionTitle('Season Insights');
+      trip.seasonTips.forEach((tip) => {
+        drawCardBlock(tip.title || 'Season tip', [tip.detail || ''], [124, 58, 237]);
+      });
+    }
+
+    if (trip.travelUpdates?.length) {
+      drawSectionTitle('Latest Travel Updates');
+      trip.travelUpdates.forEach((update) => {
+        const lines = [
+          update.publishedAt ? `Published: ${update.publishedAt}` : '',
+          cleanUpdateText(update.summary || ''),
+          update.url ? `Source: ${update.url}` : ''
+        ].filter(Boolean);
+        drawCardBlock(cleanUpdateText(update.title || 'Travel update'), lines, [3, 105, 161]);
+      });
+    }
 
     if (trip.transportOptions?.length) {
       drawSectionTitle('Transport Options');
@@ -420,6 +544,54 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
       </div>
 
       {/* Transport Options */}
+      {displayImages && displayImages.length > 0 && (
+        <div>
+          <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-3">🖼 Destination Highlights</h4>
+          <div className="grid gap-3 md:grid-cols-3">
+            {displayImages.map((image, index) => (
+              <div key={`${image.url}-${index}`} className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
+                <img src={image.url} alt={image.title || trip.destination} className="h-44 w-full object-cover" loading="lazy" />
+                <p className="max-h-10 overflow-hidden px-3 py-2 text-xs font-medium text-slate-600">{image.title || trip.destination}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {trip.seasonTips && trip.seasonTips.length > 0 && (
+        <div>
+          <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-3">🌤 Season Insights</h4>
+          <div className="grid gap-3 md:grid-cols-2">
+            {trip.seasonTips.map((tip, index) => (
+              <div key={`${tip.title}-${index}`} className="rounded-xl border border-violet-100 bg-violet-50 p-4">
+                <div className="font-semibold text-violet-800 text-sm">{tip.title || 'Season Tip'}</div>
+                <p className="text-xs text-violet-700 mt-1">{tip.detail}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {trip.travelUpdates && trip.travelUpdates.length > 0 && (
+        <div>
+          <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-3">📰 Latest Travel Updates</h4>
+          <div className="grid gap-3 md:grid-cols-2">
+            {trip.travelUpdates.map((update, index) => (
+              <div key={`${update.url || update.title}-${index}`} className="rounded-xl border border-sky-100 bg-sky-50 p-4">
+                <div className="max-h-16 overflow-hidden font-semibold text-sky-900 text-sm">{cleanUpdateText(update.title)}</div>
+                {update.publishedAt && <div className="text-xs text-sky-700 mt-1">{update.publishedAt}</div>}
+                {update.summary && <p className="max-h-16 overflow-hidden break-words text-xs text-slate-600 mt-1">{cleanUpdateText(update.summary)}</p>}
+                {update.url && (
+                  <a href={update.url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-medium text-sky-700 hover:underline">
+                    Read source ↗
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {trip.transportOptions && trip.transportOptions.length > 0 && (
         <div>
           <h4 className="text-sm font-bold text-slate-700 uppercase tracking-wide mb-3">

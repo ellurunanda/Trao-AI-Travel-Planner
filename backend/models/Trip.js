@@ -34,6 +34,28 @@ const TripSchema = new mongoose.Schema(
       symbol: { type: String, default: '$' },
       name: { type: String, default: 'US Dollar' }
     },
+    destinationImages: [
+      {
+        url: { type: String, default: '' },
+        title: { type: String, default: '' },
+        source: { type: String, default: '' }
+      }
+    ],
+    seasonTips: [
+      {
+        title: { type: String, default: '' },
+        detail: { type: String, default: '' }
+      }
+    ],
+    travelUpdates: [
+      {
+        title: { type: String, default: '' },
+        summary: { type: String, default: '' },
+        url: { type: String, default: '' },
+        source: { type: String, default: '' },
+        publishedAt: { type: String, default: '' }
+      }
+    ],
     itinerary: [
       {
         dayNumber: { type: Number, required: true },

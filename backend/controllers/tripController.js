@@ -61,6 +61,128 @@ function normalizeGeminiText(payload) {
   return JSON.parse(trimmed);
 }
 
+function stripHtml(text = '') {
+  return String(text).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function decodeHtmlEntities(text = '') {
+  return String(text)
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'");
+}
+
+async function fetchWikipediaImageFallback(destination) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const query = encodeURIComponent(destination);
+    const url = `https://en.wikipedia.org/w/api.php?action=query&format=json&generator=search&gsrsearch=${query}&gsrnamespace=0&gsrlimit=6&prop=pageimages|info&piprop=thumbnail&pithumbsize=1200&inprop=url`;
+    const response = await fetch(url, { method: 'GET', signal: controller.signal });
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = await response.json();
+    const pages = Object.values(payload?.query?.pages || {});
+    return pages
+      .map((page) => {
+        const imageUrl = page?.thumbnail?.source || '';
+        if (!imageUrl) {
+          return null;
+        }
+        return {
+          url: imageUrl,
+          title: page?.title || destination,
+          source: 'Wikipedia'
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 6);
+  } catch (error) {
+    return [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchDestinationImages(destination) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const query = encodeURIComponent(`${destination} landmark`);
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=${query}&gsrnamespace=6&gsrlimit=10&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=1200&format=json`;
+    const response = await fetch(url, { method: 'GET', signal: controller.signal });
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = await response.json();
+    const pages = Object.values(payload?.query?.pages || {});
+    return pages
+      .map((page) => {
+        const info = page?.imageinfo?.[0];
+        const title = page?.title ? page.title.replace(/^File:/, '') : '';
+        const imageUrl = info?.thumburl || info?.url || '';
+        if (!imageUrl) {
+          return null;
+        }
+
+        return { url: imageUrl, title, source: 'Wikimedia Commons' };
+      })
+      .filter(Boolean)
+      .slice(0, 6);
+  } catch (error) {
+    return [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchTravelUpdates(destination) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const query = encodeURIComponent(`${destination} travel tourism`);
+    const url = `https://news.google.com/rss/search?q=${query}&hl=en-IN&gl=IN&ceid=IN:en`;
+    const response = await fetch(url, { method: 'GET', signal: controller.signal });
+    if (!response.ok) {
+      return [];
+    }
+
+    const xml = await response.text();
+    const items = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 5);
+    return items.map((match) => {
+      const item = match[1] || '';
+      const title = stripHtml(decodeHtmlEntities((item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) || item.match(/<title>([\s\S]*?)<\/title>/) || [])[1] || ''));
+      const link = stripHtml((item.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || '');
+      const pubDate = stripHtml((item.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1] || '');
+      const rawDescription = (item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/) || item.match(/<description>([\s\S]*?)<\/description>/) || [])[1] || '';
+      const decodedDescription = decodeHtmlEntities(rawDescription);
+      const cleanSummary = stripHtml(decodedDescription).replace(/Read more$/i, '').trim();
+      const sourceLink = (decodedDescription.match(/href="([^"]+)"/i) || [])[1] || link;
+
+      return {
+        title,
+        summary: cleanSummary.slice(0, 220),
+        url: sourceLink,
+        source: 'Google News',
+        publishedAt: pubDate
+      };
+    }).filter((entry) => entry.title && entry.url);
+  } catch (error) {
+    return [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests }) {
   const origin = startingFrom ? `Starting from: ${startingFrom}.` : '';
   const transport = `Primary mode of transport: ${transportMode}.`;
@@ -86,10 +208,17 @@ IMPORTANT:
 - Packing list must be destination-aware for ${destination}, not a generic template.
 - Include destination-specific essentials based on climate, local customs, terrain, and planned activities.
 - Include at least 5 destination-specific items and at least 2 weather-specific clothing items.
+- Add season-specific guidance for ${currentMonth}, including weather expectations, crowd level, and practical advice.
 
 Return only JSON with this exact structure:
 {
   "currency": { "code": "INR", "symbol": "₹", "name": "Indian Rupee" },
+  "seasonTips": [
+    {
+      "title": "string (e.g. Weather Outlook)",
+      "detail": "string"
+    }
+  ],
   "transportOptions": [
     {
       "mode": "${transportMode}",
@@ -241,7 +370,7 @@ function mapGenerationError(error) {
   return { status: 500, message: 'Failed to generate trip details. Please try again.' };
 }
 
-async function saveTrip(req, res, generated, tripInput) {
+async function saveTrip(req, res, generated, tripInput, enrichment = {}) {
   const trip = await Trip.create({
     userId: req.user.id,
     destination: tripInput.destination,
@@ -249,6 +378,9 @@ async function saveTrip(req, res, generated, tripInput) {
     budgetTier: tripInput.budgetTier,
     interests: tripInput.interests,
     currency: generated.currency || { code: 'USD', symbol: '$', name: 'US Dollar' },
+    destinationImages: enrichment.destinationImages || [],
+    travelUpdates: enrichment.travelUpdates || [],
+    seasonTips: generated.seasonTips || enrichment.seasonTips || [],
     startingFrom: tripInput.startingFrom,
     transportMode: tripInput.transportMode,
     transportOptions: generated.transportOptions || [],
@@ -274,8 +406,21 @@ exports.generateNewTrip = async (req, res) => {
   }
 
   try {
-    const generated = await generateFromGemini(buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests }));
-    return saveTrip(req, res, generated, { destination, startingFrom, transportMode, durationDays, budgetTier, interests });
+    const [generated, primaryImages, fallbackImages, travelUpdates] = await Promise.all([
+      generateFromGemini(buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests })),
+      fetchDestinationImages(destination),
+      fetchWikipediaImageFallback(destination),
+      fetchTravelUpdates(destination)
+    ]);
+    const destinationImages = primaryImages.length ? primaryImages : fallbackImages;
+
+    return saveTrip(
+      req,
+      res,
+      generated,
+      { destination, startingFrom, transportMode, durationDays, budgetTier, interests },
+      { destinationImages, travelUpdates }
+    );
   } catch (error) {
     const failure = mapGenerationError(error);
     return res.status(failure.status).json({ message: failure.message });
