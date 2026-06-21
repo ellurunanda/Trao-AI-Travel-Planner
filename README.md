@@ -1,142 +1,132 @@
 # Trao AI Travel Planner
 
-Trao is a full-stack AI travel planner that generates editable itineraries, destination-aware packing, and export-ready trip documents.
+## Project overview
 
-## Features
+Trao AI Travel Planner is a full-stack web app that helps users generate, customize, and export complete travel itineraries.  
+Users can create trips with preferences (destination, budget, transport, interests), get AI-generated plans, edit activities, regenerate specific days, and export polished HTML/PDF travel documents.
 
-- Secure auth with JWT (register/login)
-- User-isolated trips (each user sees only their own data)
-- AI trip generation with:
-  - day-wise itinerary
-  - route-aware transport options
-  - hotel suggestions
-  - local-currency budget estimates
-  - destination-specific packing list
-  - season tips for travel month
-- Destination intelligence:
-  - destination country auto-detection in trip form
-  - auto-set Flight for international destinations (override supported)
-  - destination highlights images (with fallback image source)
-  - latest travel updates/news cards
-- Editing:
-  - regenerate a single day with feedback
-  - add/remove activities
-  - regenerate packing list
-  - packing checklist toggle
-- Trip management:
-  - list/select/delete trips
-  - custom delete confirmation modal
-  - full-screen loader while generating itinerary
-- Export:
-  - polished HTML itinerary
-  - polished PDF itinerary
-  - aligned sections across HTML and PDF
+## Chosen tech stack
 
-## Tech Stack
+| Layer | Technology | Why this choice |
+|---|---|---|
+| Frontend | Next.js 15, React 19, Tailwind CSS | Fast UI iteration, component reuse, responsive styling |
+| Backend | Node.js, Express | Simple REST API development and middleware ecosystem |
+| Database | MongoDB + Mongoose | Flexible schema for nested itinerary/activity structures |
+| Auth | JWT + bcryptjs | Stateless auth with secure password hashing |
+| AI | Google Gemini API | Structured itinerary generation using prompt-based JSON output |
+| Export | jsPDF + HTML export | Easy shareability in both browser-friendly and printable formats |
 
-| Layer | Technology |
-|---|---|
-| Frontend | Next.js 15, React 19, Tailwind CSS |
-| Backend | Node.js, Express |
-| Database | MongoDB, Mongoose |
-| Auth | JWT, bcryptjs |
-| AI | Google Gemini API |
-| Export | jsPDF + HTML export |
+## Setup instructions
 
-## Project Structure
+### Local setup
 
-```text
-Trao AI Travel Planner/
-├─ backend/
-│  ├─ config/
-│  ├─ controllers/
-│  ├─ middleware/
-│  ├─ models/
-│  ├─ routes/
-│  ├─ .env.example
-│  └─ server.js
-└─ frontend/
-   ├─ src/
-   │  ├─ app/
-   │  ├─ components/
-   │  └─ utils/
-   ├─ jsconfig.json
-   └─ package.json
-```
+1. **Prerequisites**
+   - Node.js 18+ (LTS recommended)
+   - npm
+   - MongoDB (local or Atlas)
+   - Gemini API key
 
-## Prerequisites
+2. **Backend environment**
+   - Copy `backend/.env.example` to `backend/.env`
+   - Configure:
 
-- Node.js 18+ (LTS recommended)
-- npm
-- MongoDB (local or Atlas)
-- Gemini API key
+   ```env
+   PORT=5000
+   MONGO_URI=mongodb://localhost:27017/trao
+   JWT_SECRET=change-me
+   GEMINI_API_KEY=your-gemini-api-key
+   EXTERNAL_API_TIMEOUT_MS=90000
+   ```
 
-## Environment Setup
+3. **Frontend environment**
+   - Create `frontend/.env.local`:
 
-### 1. Backend (`backend/.env`)
+   ```env
+   NEXT_PUBLIC_API_URL=http://localhost:5000
+   ```
 
-Copy `backend/.env.example` to `backend/.env`:
+4. **Install and run**
 
-```env
-PORT=5000
-MONGO_URI=mongodb://localhost:27017/trao
-JWT_SECRET=change-me
-GEMINI_API_KEY=your-gemini-api-key
-EXTERNAL_API_TIMEOUT_MS=90000
-```
+   ```bash
+   cd backend
+   npm install
+   npm run dev
+   ```
 
-### 2. Frontend (`frontend/.env.local`)
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
 
-```env
-NEXT_PUBLIC_API_URL=http://localhost:5000
-```
+   - Frontend: `http://localhost:3000`
+   - Backend: `http://localhost:5000`
 
-> Do not commit `.env` or `.env.local`.
+### Deployed setup (recommended)
 
-## Local Development
+1. Deploy backend to a Node host (Render/Railway/Azure App Service).
+2. Deploy frontend to Vercel (or any Next.js-compatible host).
+3. Use MongoDB Atlas for production database.
+4. Set backend env vars: `PORT`, `MONGO_URI`, `JWT_SECRET`, `GEMINI_API_KEY`, `EXTERNAL_API_TIMEOUT_MS`.
+5. Set frontend env var: `NEXT_PUBLIC_API_URL=<your-backend-url>`.
+6. Ensure CORS in backend allows the deployed frontend origin.
 
-### 1. Install dependencies
+## High-level architecture explanation
 
-```bash
-cd backend
-npm install
-cd ../frontend
-npm install
-```
+The application follows a client-server architecture:
 
-### 2. Run backend
+1. **Frontend (Next.js)** renders forms, dashboard, itinerary cards, and export actions.
+2. **Backend (Express)** exposes REST APIs for auth and trip operations.
+3. **AI orchestration (controller layer)** builds prompts, calls Gemini, validates JSON response shape, enriches results (season/news/images), and persists to MongoDB.
+4. **MongoDB** stores users and trip documents (itinerary, hotels, packing list, transport options, enrichments).
 
-```bash
-cd backend
-npm run dev
-```
+## Authentication and authorization approach
 
-Backend: `http://localhost:5000`
+- **Authentication**: user registers/logs in via `/api/auth/register` and `/api/auth/login`.
+- Passwords are hashed with `bcryptjs`.
+- Successful login returns a signed JWT.
+- **Authorization**: protected trip routes use auth middleware to validate JWT and attach `req.user`.
+- All trip queries are filtered by `userId`, enforcing per-user data isolation.
 
-### 3. Run frontend
+## AI agent design and purpose
 
-```bash
-cd frontend
-npm run dev
-```
+The AI layer is implemented in backend controllers as a focused orchestration pipeline (not a generic chat bot):
 
-Frontend: `http://localhost:3000`
+1. Build a strict prompt with trip constraints (duration, budget, transport mode, interests, current month).
+2. Request structured JSON from Gemini.
+3. Parse/normalize response and handle retries/timeouts.
+4. Add enrichment data (destination images fallback, travel updates feed, season insights).
+5. Save final trip model for UI editing/export.
 
-## Scripts
+Purpose: convert user travel intent into a practical, editable itinerary with realistic structure and costs.
 
-### Backend
+## Creative/custom feature
 
-- `npm run dev` - run with nodemon
-- `npm start` - run with node
+**Destination intelligence enrichment** is the custom feature:
 
-### Frontend
+- Auto-detect destination country and auto-suggest Flight for international trips.
+- Add destination highlight images (primary + fallback source).
+- Show latest travel updates/news.
+- Include season-aware tips for the current travel month.
 
-- `npm run dev` - start Next.js dev server on port 3000
-- `npm run build` - production build
-- `npm start` - run production server on port 3000
-- `npm run clean` - remove `.next` cache/build folder
+This makes outputs more contextual than a plain static itinerary.
 
-## API Routes
+## Key design decisions and trade-offs
+
+- **JSON-first AI output**: improved consistency for UI rendering, but requires strict prompting and parsing.
+- **Stateless JWT auth**: scales well and keeps backend simple, but requires careful token handling in clients.
+- **Flexible MongoDB schema**: fast iteration for nested trip data, but requires disciplined validation.
+- **External enrichment sources**: improves experience, but introduces dependency on third-party availability and data quality.
+- **Dual export (HTML + PDF)**: better user utility, but requires maintaining parity between two rendering paths.
+
+## Known limitations
+
+- AI output can still vary in quality based on model behavior and destination specificity.
+- External image/news sources may occasionally return sparse or noisy results.
+- Some older trips (created before enrichment fields were introduced) may show fewer enrichment sections.
+- No offline mode; generation and enrichment require internet connectivity.
+
+## API summary
 
 ### Auth
 
@@ -159,17 +149,3 @@ Frontend: `http://localhost:3000`
 ### Health
 
 - `GET /health`
-
-## Typical Flow
-
-1. Register/login.
-2. Create trip with destination, origin, transport, days, budget, interests.
-3. Let AI generate itinerary + budget + hotels + packing + season tips.
-4. Refine by regenerating days, editing activities, updating packing.
-5. Download final itinerary as HTML or PDF.
-
-## Notes
-
-- Destination auto-detection can auto-select Flight for international trips.
-- AI generation timeout can be tuned with `EXTERNAL_API_TIMEOUT_MS`.
-- Older trips created before enrichment may have less media/news data than newly generated trips.
