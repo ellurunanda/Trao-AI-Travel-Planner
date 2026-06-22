@@ -2,6 +2,8 @@ const Trip = require('../models/Trip');
 
 const GATHERING_MESSAGE = 'The Gemini API key is missing or the service did not return a usable payload.';
 const EXTERNAL_API_TIMEOUT_MS = Number(process.env.EXTERNAL_API_TIMEOUT_MS || 90000);
+const VALID_TIME_OF_DAY = new Set(['Morning', 'Afternoon', 'Evening']);
+const VALID_PACKING_CATEGORIES = new Set(['Documents', 'Clothing', 'Gear', 'Other']);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -24,9 +26,21 @@ async function fetchWithRetry(url, options, retries = 3, delay = 1000) {
         return response.json();
       }
 
+      let responseDetails = '';
+      try {
+        const errorPayload = await response.json();
+        responseDetails = errorPayload?.error?.message || errorPayload?.message || JSON.stringify(errorPayload);
+      } catch (jsonError) {
+        try {
+          responseDetails = await response.text();
+        } catch (textError) {
+          responseDetails = '';
+        }
+      }
+
       const canRetry = response.status === 429 || response.status >= 500;
       if (!canRetry || attempt === retries) {
-        throw new Error(`External API Error: Status Code ${response.status}`);
+        throw new Error(`External API Error: Status Code ${response.status}${responseDetails ? ` - ${responseDetails}` : ''}`);
       }
     } catch (error) {
       clearTimeout(timeoutId);
@@ -63,6 +77,15 @@ function normalizeGeminiText(payload) {
 
 function stripHtml(text = '') {
   return String(text).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function toText(value = '') {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function decodeHtmlEntities(text = '') {
@@ -183,10 +206,13 @@ async function fetchTravelUpdates(destination) {
   }
 }
 
-function buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests }) {
+function buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests, feedback = '' }) {
   const origin = startingFrom ? `Starting from: ${startingFrom}.` : '';
   const transport = `Primary mode of transport: ${transportMode}.`;
   const currentMonth = new Date().toLocaleString('en-US', { month: 'long' });
+  const regenerationFeedback = String(feedback || '').trim()
+    ? `Regeneration feedback: ${String(feedback).trim()}.`
+    : '';
   return `
 Create a detailed ${durationDays}-day trip plan for ${destination}.
 ${origin}
@@ -194,7 +220,8 @@ ${transport}
 Budget tier: ${budgetTier}.
 Interests: ${interests.join(', ') || 'general sightseeing'}.
 Travel month: ${currentMonth}.
-
+${regenerationFeedback}
+ 
 IMPORTANT:
 - Detect the local currency for ${destination} and use it for ALL cost estimates.
 - Include travel/transit details on Day 1 based on the starting location and transport mode.
@@ -299,6 +326,59 @@ Return only JSON:
   `.trim();
 }
 
+function buildRegenerateDayPrompt(trip, dayNumber, feedback = '') {
+  const currentMonth = new Date().toLocaleString('en-US', { month: 'long' });
+  const targetDay = (trip.itinerary || []).find((day) => day.dayNumber === Number(dayNumber));
+  const itinerarySummary = (trip.itinerary || []).map((day) => ({
+    dayNumber: day.dayNumber,
+    activities: (day.activities || []).slice(0, 4).map((activity) => ({
+      title: toText(activity.title),
+      timeOfDay: toText(activity.timeOfDay)
+    }))
+  }));
+
+  return `
+Update only day ${Number(dayNumber)} for this trip.
+
+Trip facts:
+- Destination: ${trip.destination}
+- Starting from: ${trip.startingFrom || 'not provided'}
+- Duration: ${trip.durationDays} days
+- Budget tier: ${trip.budgetTier}
+- Transport mode: ${trip.transportMode || 'not specified'}
+- Interests: ${(trip.interests || []).join(', ') || 'general sightseeing'}
+- Travel month: ${currentMonth}
+- Feedback: ${toText(feedback) || 'No additional feedback'}
+
+Current day ${Number(dayNumber)} JSON:
+${JSON.stringify(targetDay || { dayNumber: Number(dayNumber), activities: [] })}
+
+Trip itinerary summary:
+${JSON.stringify(itinerarySummary)}
+
+Rules:
+- Return only valid JSON
+- Update only the requested day
+- Keep activities realistic for the destination and budget
+- Every activity MUST include a non-empty title
+- Use only Morning, Afternoon, or Evening for timeOfDay
+- Use estimatedCostLocal, not estimatedCostUSD
+
+Return only this JSON shape:
+{
+  "dayNumber": ${Number(dayNumber)},
+  "activities": [
+    {
+      "title": "string",
+      "description": "string",
+      "estimatedCostLocal": 0,
+      "timeOfDay": "Morning|Afternoon|Evening"
+    }
+  ]
+}
+  `.trim();
+}
+
 async function generateFromGemini(prompt) {
   if (!process.env.GEMINI_API_KEY) {
     throw new Error(GATHERING_MESSAGE);
@@ -358,9 +438,54 @@ async function detectDestinationCountry(destination) {
   }
 }
 
+function extractRetryAfterSeconds(message = '') {
+  const match = String(message).match(/Please retry in\s+([\d.]+)s/i);
+  if (!match) {
+    return null;
+  }
+
+  const seconds = Math.ceil(Number(match[1]));
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+function formatRetryDelay(seconds) {
+  if (!seconds || seconds < 1) {
+    return 'a moment';
+  }
+
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+}
+
 function mapGenerationError(error) {
+  if (error?.name === 'ValidationError') {
+    return { status: 422, message: 'Generated trip data was incomplete. Please try again.' };
+  }
+
   if (/timeout/i.test(error.message)) {
     return { status: 504, message: 'Trip generation timed out. Please try again.' };
+  }
+
+  if (/Status Code 400/i.test(error.message)) {
+    return { status: 400, message: 'AI rejected the regenerate request. Try shorter feedback or try again.' };
+  }
+
+  if (/Status Code 401|Status Code 403/i.test(error.message)) {
+    return { status: 502, message: 'Gemini API key is invalid or missing permission.' };
+  }
+
+  if (/Status Code 429/i.test(error.message)) {
+    const retryAfterSeconds = extractRetryAfterSeconds(error.message);
+    return {
+      status: 429,
+      message: `AI rate limit reached. Please wait ${formatRetryDelay(retryAfterSeconds)} and try again.`,
+      retryAfterSeconds
+    };
   }
 
   if (/External API Error/i.test(error.message)) {
@@ -370,24 +495,196 @@ function mapGenerationError(error) {
   return { status: 500, message: 'Failed to generate trip details. Please try again.' };
 }
 
-async function saveTrip(req, res, generated, tripInput, enrichment = {}) {
-  const trip = await Trip.create({
-    userId: req.user.id,
+function sendGenerationFailure(res, error) {
+  const failure = mapGenerationError(error);
+  const body = { message: failure.message };
+
+  if (failure.retryAfterSeconds) {
+    body.retryAfterSeconds = failure.retryAfterSeconds;
+  }
+
+  return res.status(failure.status).json(body);
+}
+
+function buildTripInput(source = {}) {
+  return {
+    destination: source.destination,
+    startingFrom: source.startingFrom || '',
+    transportMode: source.transportMode || 'Flight',
+    durationDays: source.durationDays,
+    budgetTier: source.budgetTier,
+    interests: Array.isArray(source.interests) ? source.interests : []
+  };
+}
+
+function normalizeActivity(activity = {}, index = 0) {
+  const description = toText(activity.description);
+  const fallbackTitle = description ? description.split(/[.!?]/)[0].trim().slice(0, 80) : '';
+  const title = toText(activity.title) || toText(activity.name) || fallbackTitle || `Activity ${index + 1}`;
+  const timeOfDay = VALID_TIME_OF_DAY.has(activity.timeOfDay) ? activity.timeOfDay : 'Afternoon';
+
+  return {
+    title,
+    description,
+    estimatedCostUSD: toNumber(activity.estimatedCostUSD, 0),
+    estimatedCostLocal: toNumber(activity.estimatedCostLocal ?? activity.estimatedCostUSD, 0),
+    timeOfDay
+  };
+}
+
+function normalizeItinerary(itinerary = [], durationDays = 0) {
+  const normalized = Array.isArray(itinerary)
+    ? itinerary.map((day, index) => ({
+        dayNumber: toNumber(day?.dayNumber, index + 1),
+        activities: Array.isArray(day?.activities)
+          ? day.activities.map((activity, activityIndex) => normalizeActivity(activity, activityIndex))
+          : []
+      }))
+    : [];
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  return Array.from({ length: Math.max(toNumber(durationDays, 0), 0) }, (_, index) => ({
+    dayNumber: index + 1,
+    activities: []
+  }));
+}
+
+function normalizeTransportOptions(options = []) {
+  return Array.isArray(options)
+    ? options.map((option) => ({
+        mode: toText(option.mode),
+        name: toText(option.name),
+        detail: toText(option.detail),
+        estimatedCostLocal: toNumber(option.estimatedCostLocal, 0),
+        bookingTip: toText(option.bookingTip)
+      }))
+    : [];
+}
+
+function normalizeHotels(hotels = [], budgetTier = '') {
+  return Array.isArray(hotels)
+    ? hotels.map((hotel, index) => ({
+        name: toText(hotel.name) || `Recommended Hotel ${index + 1}`,
+        tier: toText(hotel.tier) || toText(budgetTier),
+        estimatedCostNightUSD: toNumber(hotel.estimatedCostNightUSD, 0),
+        estimatedCostNightLocal: toNumber(hotel.estimatedCostNightLocal ?? hotel.estimatedCostNightUSD, 0),
+        rating: toText(hotel.rating)
+      }))
+    : [];
+}
+
+function normalizePackingList(packingList = []) {
+  return Array.isArray(packingList)
+    ? packingList
+        .map((item) => {
+          const label = toText(item?.item);
+          if (!label) {
+            return null;
+          }
+
+          const category = VALID_PACKING_CATEGORIES.has(item.category) ? item.category : 'Other';
+          return {
+            item: label,
+            category,
+            isPacked: Boolean(item.isPacked)
+          };
+        })
+        .filter(Boolean)
+    : [];
+}
+
+function normalizeSeasonTips(seasonTips = []) {
+  return Array.isArray(seasonTips)
+    ? seasonTips.map((tip) => ({
+        title: toText(tip?.title),
+        detail: toText(tip?.detail)
+      }))
+    : [];
+}
+
+function normalizeTravelUpdates(travelUpdates = []) {
+  return Array.isArray(travelUpdates)
+    ? travelUpdates.map((update) => ({
+        title: toText(update?.title),
+        summary: toText(update?.summary),
+        url: toText(update?.url),
+        source: toText(update?.source),
+        publishedAt: toText(update?.publishedAt)
+      }))
+    : [];
+}
+
+function normalizeDestinationImages(images = [], destination = '') {
+  return Array.isArray(images)
+    ? images
+        .map((image) => {
+          const url = toText(image?.url);
+          if (!url) {
+            return null;
+          }
+
+          return {
+            url,
+            title: toText(image?.title) || destination,
+            source: toText(image?.source)
+          };
+        })
+        .filter(Boolean)
+    : [];
+}
+
+function normalizeEstimatedBudget(estimatedBudget = {}) {
+  return {
+    transport: toNumber(estimatedBudget.transport, 0),
+    accommodation: toNumber(estimatedBudget.accommodation, 0),
+    food: toNumber(estimatedBudget.food, 0),
+    activities: toNumber(estimatedBudget.activities, 0),
+    total: toNumber(estimatedBudget.total, 0)
+  };
+}
+
+function buildTripData(generated, tripInput, enrichment = {}) {
+  return {
     destination: tripInput.destination,
+    startingFrom: tripInput.startingFrom,
+    transportMode: tripInput.transportMode,
     durationDays: tripInput.durationDays,
     budgetTier: tripInput.budgetTier,
     interests: tripInput.interests,
     currency: generated.currency || { code: 'USD', symbol: '$', name: 'US Dollar' },
-    destinationImages: enrichment.destinationImages || [],
-    travelUpdates: enrichment.travelUpdates || [],
-    seasonTips: generated.seasonTips || enrichment.seasonTips || [],
-    startingFrom: tripInput.startingFrom,
-    transportMode: tripInput.transportMode,
-    transportOptions: generated.transportOptions || [],
-    itinerary: generated.itinerary || [],
-    hotels: generated.hotels || [],
-    estimatedBudget: generated.estimatedBudget || {},
-    packingList: generated.packingList || []
+    destinationImages: normalizeDestinationImages(enrichment.destinationImages, tripInput.destination),
+    travelUpdates: normalizeTravelUpdates(enrichment.travelUpdates),
+    seasonTips: normalizeSeasonTips(generated.seasonTips || enrichment.seasonTips || []),
+    transportOptions: normalizeTransportOptions(generated.transportOptions),
+    itinerary: normalizeItinerary(generated.itinerary, tripInput.durationDays),
+    hotels: normalizeHotels(generated.hotels, tripInput.budgetTier),
+    estimatedBudget: normalizeEstimatedBudget(generated.estimatedBudget),
+    packingList: normalizePackingList(generated.packingList)
+  };
+}
+
+async function generateTripContent(tripInput, feedback = '') {
+  const [generated, primaryImages, fallbackImages, travelUpdates] = await Promise.all([
+    generateFromGemini(buildPrompt({ ...tripInput, feedback })),
+    fetchDestinationImages(tripInput.destination),
+    fetchWikipediaImageFallback(tripInput.destination),
+    fetchTravelUpdates(tripInput.destination)
+  ]);
+  const destinationImages = primaryImages.length ? primaryImages : fallbackImages;
+
+  return {
+    generated,
+    enrichment: { destinationImages, travelUpdates }
+  };
+}
+
+async function saveTrip(req, res, generated, tripInput, enrichment = {}) {
+  const trip = await Trip.create({
+    userId: req.user.id,
+    ...buildTripData(generated, tripInput, enrichment)
   });
 
   return res.status(201).json(trip);
@@ -399,31 +696,18 @@ exports.getTrips = async (req, res) => {
 };
 
 exports.generateNewTrip = async (req, res) => {
-  const { destination, startingFrom = '', transportMode = 'Flight', durationDays, budgetTier, interests = [] } = req.body;
+  const tripInput = buildTripInput(req.body);
+  const { destination, durationDays, budgetTier } = tripInput;
 
   if (!destination || !durationDays || !budgetTier) {
     return res.status(400).json({ message: 'destination, durationDays, and budgetTier are required' });
   }
 
   try {
-    const [generated, primaryImages, fallbackImages, travelUpdates] = await Promise.all([
-      generateFromGemini(buildPrompt({ destination, startingFrom, transportMode, durationDays, budgetTier, interests })),
-      fetchDestinationImages(destination),
-      fetchWikipediaImageFallback(destination),
-      fetchTravelUpdates(destination)
-    ]);
-    const destinationImages = primaryImages.length ? primaryImages : fallbackImages;
-
-    return saveTrip(
-      req,
-      res,
-      generated,
-      { destination, startingFrom, transportMode, durationDays, budgetTier, interests },
-      { destinationImages, travelUpdates }
-    );
+    const { generated, enrichment } = await generateTripContent(tripInput);
+    return saveTrip(req, res, generated, tripInput, enrichment);
   } catch (error) {
-    const failure = mapGenerationError(error);
-    return res.status(failure.status).json({ message: failure.message });
+    return sendGenerationFailure(res, error);
   }
 };
 
@@ -459,19 +743,31 @@ exports.getTripById = async (req, res) => {
 };
 
 exports.updateTrip = async (req, res) => {
-  const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
+  const updates = {};
+
+  if (req.body.itinerary !== undefined) {
+    updates.itinerary = normalizeItinerary(req.body.itinerary);
+  }
+  if (req.body.packingList !== undefined) {
+    updates.packingList = normalizePackingList(req.body.packingList);
+  }
+  if (req.body.estimatedBudget !== undefined) {
+    updates.estimatedBudget = normalizeEstimatedBudget(req.body.estimatedBudget);
+  }
+  if (req.body.hotels !== undefined) {
+    updates.hotels = normalizeHotels(req.body.hotels);
+  }
+
+  const trip = await Trip.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user.id },
+    { $set: updates },
+    { new: true, runValidators: true }
+  );
+
   if (!trip) {
     return res.status(404).json({ message: 'Trip not found' });
   }
 
-  const allowed = ['itinerary', 'packingList', 'estimatedBudget', 'hotels'];
-  for (const key of allowed) {
-    if (req.body[key] !== undefined) {
-      trip[key] = req.body[key];
-    }
-  }
-
-  await trip.save();
   return res.json(trip);
 };
 
@@ -485,27 +781,33 @@ exports.deleteTrip = async (req, res) => {
 
 exports.addActivity = async (req, res) => {
   const { dayNumber, activity } = req.body;
-  const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
-  if (!trip) return res.status(404).json({ message: 'Trip not found' });
+  const normalizedActivity = normalizeActivity(activity);
 
-  const day = trip.itinerary.find((entry) => entry.dayNumber === Number(dayNumber));
-  if (!day) return res.status(404).json({ message: 'Day not found' });
+  const trip = await Trip.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user.id, 'itinerary.dayNumber': Number(dayNumber) },
+    { $push: { 'itinerary.$.activities': normalizedActivity } },
+    { new: true, runValidators: true }
+  );
 
-  day.activities.push(activity);
-  await trip.save();
+  if (!trip) {
+    return res.status(404).json({ message: 'Trip or day not found' });
+  }
+
   return res.json(trip);
 };
 
 exports.removeActivity = async (req, res) => {
   const { dayNumber, activityId } = req.body;
-  const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
-  if (!trip) return res.status(404).json({ message: 'Trip not found' });
+  const trip = await Trip.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user.id, 'itinerary.dayNumber': Number(dayNumber) },
+    { $pull: { 'itinerary.$.activities': { _id: activityId } } },
+    { new: true, runValidators: true }
+  );
 
-  const day = trip.itinerary.find((entry) => entry.dayNumber === Number(dayNumber));
-  if (!day) return res.status(404).json({ message: 'Day not found' });
+  if (!trip) {
+    return res.status(404).json({ message: 'Trip or day not found' });
+  }
 
-  day.activities = day.activities.filter((activity) => activity._id.toString() !== activityId);
-  await trip.save();
   return res.json(trip);
 };
 
@@ -514,36 +816,60 @@ exports.regenerateDay = async (req, res) => {
   const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
   if (!trip) return res.status(404).json({ message: 'Trip not found' });
 
-  const prompt = `
-Update only day ${req.params.dayNumber} for this trip:
-Destination: ${trip.destination}
-Duration: ${trip.durationDays}
-Budget tier: ${trip.budgetTier}
-Current trip JSON: ${JSON.stringify(trip.itinerary)}
-Feedback: ${feedback}
-
-Return only JSON for a single day object:
-{
-  "dayNumber": ${Number(req.params.dayNumber)},
-  "activities": [{ "title": "", "description": "", "estimatedCostUSD": 0, "timeOfDay": "Morning" }]
-}
-  `.trim();
-
   let generated;
   try {
-    generated = await generateFromGemini(prompt);
+    generated = await generateFromGemini(buildRegenerateDayPrompt(trip, req.params.dayNumber, feedback));
   } catch (error) {
-    const failure = mapGenerationError(error);
-    return res.status(failure.status).json({ message: failure.message });
+    console.error('regenerateDay Gemini error:', error.message);
+    return sendGenerationFailure(res, error);
   }
   const newDay = generated.dayNumber ? generated : generated.itinerary?.[0];
   if (!newDay) {
     return res.status(500).json({ message: 'Could not regenerate day' });
   }
 
-  trip.itinerary = trip.itinerary.map((day) => (day.dayNumber === Number(req.params.dayNumber) ? newDay : day));
-  await trip.save();
-  return res.json(trip);
+  const normalizedDay = {
+    dayNumber: Number(req.params.dayNumber),
+    activities: normalizeItinerary([newDay], 1)[0]?.activities || []
+  };
+  const itinerary = trip.itinerary.map((day) => (day.dayNumber === Number(req.params.dayNumber) ? normalizedDay : day));
+  const updatedTrip = await Trip.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user.id },
+    { $set: { itinerary } },
+    { new: true, runValidators: true }
+  );
+
+  if (!updatedTrip) {
+    return res.status(404).json({ message: 'Trip not found' });
+  }
+
+  return res.json(updatedTrip);
+};
+
+exports.regenerateTrip = async (req, res) => {
+  const trip = await Trip.findOne({ _id: req.params.id, userId: req.user.id });
+  if (!trip) return res.status(404).json({ message: 'Trip not found' });
+
+  const feedback = String(req.body?.feedback || '').trim();
+  const tripInput = buildTripInput(trip.toObject());
+
+  try {
+    const { generated, enrichment } = await generateTripContent(tripInput, feedback);
+    const updatedTrip = await Trip.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      { $set: buildTripData(generated, tripInput, enrichment) },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedTrip) {
+      return res.status(404).json({ message: 'Trip not found' });
+    }
+
+    return res.json(updatedTrip);
+  } catch (error) {
+    console.error('regenerateTrip Gemini error:', error.message);
+    return sendGenerationFailure(res, error);
+  }
 };
 
 exports.generatePackingList = async (req, res) => {
@@ -554,10 +880,18 @@ exports.generatePackingList = async (req, res) => {
   try {
     generated = await generateFromGemini(buildPackingPrompt(trip));
   } catch (error) {
-    const failure = mapGenerationError(error);
-    return res.status(failure.status).json({ message: failure.message });
+    return sendGenerationFailure(res, error);
   }
-  trip.packingList = generated.packingList || [];
-  await trip.save();
-  return res.json(trip);
+
+  const updatedTrip = await Trip.findOneAndUpdate(
+    { _id: req.params.id, userId: req.user.id },
+    { $set: { packingList: normalizePackingList(generated.packingList) } },
+    { new: true, runValidators: true }
+  );
+
+  if (!updatedTrip) {
+    return res.status(404).json({ message: 'Trip not found' });
+  }
+
+  return res.json(updatedTrip);
 };

@@ -10,6 +10,7 @@ const {
   addActivity,
   removeActivity,
   regenerateDay,
+  regenerateTrip,
   generatePackingList
 } = require('../controllers/tripController');
 
@@ -24,6 +25,7 @@ router.delete('/:id', deleteTrip);
 router.post('/:id/activities', addActivity);
 router.delete('/:id/activities', removeActivity);
 router.post('/:id/days/:dayNumber/regenerate', regenerateDay);
+router.post('/:id/regenerate', regenerateTrip);
 router.post('/:id/packing-list', generatePackingList);
 
 module.exports = router;

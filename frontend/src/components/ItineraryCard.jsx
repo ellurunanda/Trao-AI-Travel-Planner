@@ -38,12 +38,36 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
   const [feedback, setFeedback] = useState('');
   const [drafts, setDrafts] = useState({});
   const [fallbackImages, setFallbackImages] = useState([]);
+  const [regeneratingDayNumber, setRegeneratingDayNumber] = useState(null);
+  const [isRegeneratingTrip, setIsRegeneratingTrip] = useState(false);
+  const [regenerateCooldownUntil, setRegenerateCooldownUntil] = useState(null);
+  const [cooldownSecondsLeft, setCooldownSecondsLeft] = useState(0);
 
   const sym = trip.currency?.symbol || '$';
   const code = trip.currency?.code || 'USD';
   const currencyLabel = `${sym}${code ? ` ${code}` : ''}`;
   const formatMoney = (value, suffix = '') => (value > 0 ? `${sym}${Number(value).toLocaleString()}${suffix}` : '');
   const displayImages = trip.destinationImages?.length ? trip.destinationImages : fallbackImages;
+  const isCooldownActive = cooldownSecondsLeft > 0;
+
+  useEffect(() => {
+    if (!regenerateCooldownUntil) {
+      setCooldownSecondsLeft(0);
+      return;
+    }
+
+    const updateCountdown = () => {
+      const remaining = Math.max(0, Math.ceil((regenerateCooldownUntil - Date.now()) / 1000));
+      setCooldownSecondsLeft(remaining);
+      if (remaining === 0) {
+        setRegenerateCooldownUntil(null);
+      }
+    };
+
+    updateCountdown();
+    const intervalId = setInterval(updateCountdown, 1000);
+    return () => clearInterval(intervalId);
+  }, [regenerateCooldownUntil]);
 
   useEffect(() => {
     if (trip.destinationImages?.length || !trip.destination) {
@@ -92,6 +116,13 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
       active = false;
     };
   }, [trip.destination, trip.destinationImages?.length]);
+
+  const applyRegenerateCooldown = (seconds) => {
+    if (!seconds || seconds <= 0) {
+      return;
+    }
+    setRegenerateCooldownUntil(Date.now() + seconds * 1000);
+  };
 
   const downloadHtml = () => {
     const imageRows = (displayImages || []).map((image) => `
@@ -454,13 +485,44 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
   };
 
   const regenerateDay = async (dayNumber) => {
-    const response = await apiFetch(`/api/trips/${trip._id}/days/${dayNumber}/regenerate`, {
-      method: 'POST',
-      body: JSON.stringify({ feedback })
-    });
+    setRegeneratingDayNumber(dayNumber);
+    try {
+      const response = await apiFetch(`/api/trips/${trip._id}/days/${dayNumber}/regenerate`, {
+        method: 'POST',
+        body: JSON.stringify({ feedback })
+      });
 
-    if (response.ok) {
-      onChange(await response.json());
+      if (response.ok) {
+        onChange(await response.json());
+        return;
+      }
+
+      const error = await response.json().catch(() => ({}));
+      applyRegenerateCooldown(error.retryAfterSeconds);
+      alert(error.message || 'Could not regenerate this day. Please try again.');
+    } finally {
+      setRegeneratingDayNumber(null);
+    }
+  };
+
+  const regenerateFullTrip = async () => {
+    setIsRegeneratingTrip(true);
+    try {
+      const response = await apiFetch(`/api/trips/${trip._id}/regenerate`, {
+        method: 'POST',
+        body: JSON.stringify({ feedback })
+      });
+
+      if (response.ok) {
+        onChange(await response.json());
+        return;
+      }
+
+      const error = await response.json().catch(() => ({}));
+      applyRegenerateCooldown(error.retryAfterSeconds);
+      alert(error.message || 'Could not regenerate the full trip. Please try again.');
+    } finally {
+      setIsRegeneratingTrip(false);
     }
   };
 
@@ -540,8 +602,22 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
             </button>
           )}
           <input className="field min-w-[170px] flex-1 text-xs py-2" placeholder="Feedback for regenerate..." value={feedback} onChange={(e) => setFeedback(e.target.value)} />
+          <button
+            type="button"
+            onClick={regenerateFullTrip}
+            disabled={isRegeneratingTrip || regeneratingDayNumber !== null || isCooldownActive}
+            className="btn-primary text-xs whitespace-nowrap disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isRegeneratingTrip ? 'Regenerating trip...' : isCooldownActive ? `Wait ${cooldownSecondsLeft}s` : '🔄 Full trip'}
+          </button>
         </div>
       </div>
+
+      {isCooldownActive && (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Gemini rate limit reached. Please wait about <span className="font-semibold">{cooldownSecondsLeft}s</span> before trying regenerate again.
+        </div>
+      )}
 
       {/* Transport Options */}
       {displayImages && displayImages.length > 0 && (
@@ -622,9 +698,10 @@ export default function ItineraryCard({ trip, onChange, onDelete, isDeleting = f
               <span className="font-bold text-slate-800">Day {day.dayNumber}</span>
               <button
                 className="btn-ghost text-xs text-indigo-600 hover:bg-indigo-50"
+                disabled={isRegeneratingTrip || regeneratingDayNumber === day.dayNumber || isCooldownActive}
                 onClick={() => regenerateDay(day.dayNumber)}
               >
-                🔄 Regenerate
+                {regeneratingDayNumber === day.dayNumber ? 'Regenerating...' : isCooldownActive ? `Wait ${cooldownSecondsLeft}s` : '🔄 Regenerate'}
               </button>
             </div>
             <div className="p-3 space-y-2">
